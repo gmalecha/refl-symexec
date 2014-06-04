@@ -1,0 +1,7 @@
+*.v.d
+*.glob
+*.vo
+*~
+.dir-locals.el
+coq-ext-lib
+mirror-core
