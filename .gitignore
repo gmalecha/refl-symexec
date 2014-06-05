@@ -5,3 +5,4 @@
 .dir-locals.el
 coq-ext-lib
 mirror-core
+Makefile.coq
