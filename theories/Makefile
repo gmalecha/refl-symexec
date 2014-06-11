@@ -1,4 +1,4 @@
-MODULES    := Rtl WeakestPre
+MODULES    := Rtl WeakestPre WeakestPreApplicative
 
 TESTS :=
 VS         := $(MODULES:%=%.v)
