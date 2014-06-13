@@ -20,7 +20,7 @@ Definition size1 : nat := 1.
 Definition size8 : nat := 8.
 Axiom location : nat -> Type.
 Axiom array : nat -> nat -> Type.
-Axiom size_addr : nat.
+Definition size_addr : nat := 32.
 
 Inductive rtl_exp : nat -> Type :=
 | arith_rtl_exp : forall s (b:bit_vector_op)(e1 e2:rtl_exp s), rtl_exp s

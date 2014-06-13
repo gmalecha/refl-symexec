@@ -81,8 +81,9 @@ Section wp.
   | fEx : typ -> func
   | fEq : typ -> func
   | fLoc_upd : forall sz, location sz -> func
-  | fArray_upd : nat -> nat -> func
+  | fArray_upd : forall s l, array s l -> func
   | fMem_upd
+  | fRandom_upd
     (** these are from applicative **)
   | fPure : typ -> func
   | fAp : typ -> typ -> func
@@ -102,6 +103,13 @@ Section wp.
 
   Definition loc_eq a (la : location a) b (lb : location b)
   : {@existT _ _ a la = @existT _ _ b lb} + {@existT _ _ a la <> @existT _ _ b lb}.
+    destruct (Peano_dec.eq_nat_dec a b).
+    { subst. admit. }
+    { right. intro. inversion H. auto. }
+  Defined.
+
+  Definition array_eq la sa (l : array la sa) lb sb (r : array lb sb)
+  : bool.
   Admitted.
 
   Instance bv_op_eq : RelDec (@eq bit_vector_op) :=
@@ -157,7 +165,7 @@ Section wp.
   Definition leq (t : typ) (a b : sexpr) : sprop :=
     Inj (fEq t) @ a @ b.
 
-  Definition array_upd (s l : nat) : sexpr := Inj (fArray_upd s l).
+(*  Definition array_upd (s l : nat) : sexpr := Inj (fArray_upd s l). *)
 
   Definition memory_upd : sexpr := Inj fMem_upd.
   Definition memory_read : sexpr := Inj fMem_read.
@@ -218,13 +226,14 @@ Section wp.
       | set_array_rtl l s a x v =>
         x_e <- rtl_exp_to_expr (Var 0) x ;;
         v_e <- rtl_exp_to_expr (Var 0) v ;;
-        ret (Abs tyState (p @ (Inj (fArray_upd l s) @ x_e @ v_e @ Var 0)))
+        ret (Abs tyState (p @ (Inj (fArray_upd a) @ x_e @ v_e @ Var 0)))
       | set_byte_rtl e a =>
         a_e <- rtl_exp_to_expr (Var 0) a ;;
         e_e <- rtl_exp_to_expr (Var 0) e ;;
         ret (Abs tyState (land (is_writeable (Var 0) a_e)
                                (p @ (Inj fMem_upd @ a_e @ e_e @ Var 0))))
-      | advance_oracle_rtl => ret p
+      | advance_oracle_rtl =>
+        ret (Abs tyState (p @ (Inj fRandom_upd @ Var 0)))
       | if_rtl t e =>
         test_e <- rtl_exp_to_expr (Var 0) t ;;
         tr_e <- wp_rtl_instr e p ;;
@@ -253,11 +262,122 @@ Section wp.
                           end)
     end.
 
+(*
+  | fLoc_upd : forall sz, location sz -> func
+  | fArray_upd : nat -> nat -> func
+  | fMem_upd
+    (** these are selectors **)
+  | fLoc : forall sz, location sz -> func
+  | fArray : forall s l, array s l -> func
+  | fMem_read
+  | fRandom : nat -> func
+*)
+
+  Require Import MirrorCore.Lambda.AppN.
+
+  Local Notation "a '@p' b" := (App a b) (at level 30).
+
+  Section get_loc.
+    Context {sz : nat}.
+    Variable l : location sz.
+
+    (** We assume that s is s state expression **)
+    Fixpoint mc_carthy_loc (s : sexpr) : sexpr :=
+      match s with
+        | Inj (fLoc_upd sz' l') @p val @p s =>
+          if loc_eq l l' then
+            val
+          else
+            mc_carthy_loc s
+        | Inj fMem_upd @p _ @p _ @p s =>
+          mc_carthy_loc s
+        | Inj (fArray_upd _ _ _) @p _ @p _ @p s =>
+          mc_carthy_loc s
+        | Inj fRandom_up @p s =>
+          mc_carthy_loc s
+        | _ => Inj (fLoc l) @ s
+      end.
+  End get_loc.
+
+  Section get_array.
+    Context {sz l : nat}.
+    Variable a : array sz l.
+    Variable i : sexpr.
+
+    (** We assume that s is s state expression **)
+    Fixpoint mc_carthy_array (s : sexpr) : sexpr :=
+      match s with
+        | Inj (fLoc_upd sz' l') @p val @p s =>
+          mc_carthy_array s
+        | Inj fMem_upd @p _ @p _ @p s =>
+          mc_carthy_array s
+        | Inj (fArray_upd s' l' a') @p idx @p val @p s =>
+          if array_eq a a' then
+            if expr_eq_dec _ _ idx i then
+              val
+            else
+              Inj (fIf (tyInt sz))
+                  @ (Inj (fTestop l eq_op) @ i @ idx)
+                  @ val
+                  @ mc_carthy_array s
+          else
+            mc_carthy_array s
+        | Inj fRandom_up @p s =>
+          mc_carthy_array s
+        | _ => Inj (fArray a) @ s
+      end.
+  End get_array.
+
+  Section get_mem.
+    Variable p : sexpr.
+
+    (** We assume that s is s state expression **)
+    Fixpoint mc_carthy_memory (s : sexpr) : sexpr :=
+      match s with
+        | Inj (fLoc_upd sz' l') @p val @p s =>
+          mc_carthy_memory s
+        | Inj fMem_upd @p p' @p v @p s =>
+          if expr_eq_dec _ _ p p' then
+            v
+          else
+            Inj (fIf (tyInt 32))
+                @ (Inj (fTestop 32 eq_op) @ p @ p')
+                @ v
+                @ mc_carthy_memory s
+        | Inj (fArray_upd s' l' a') @p idx @p val @p s =>
+          mc_carthy_memory s
+        | Inj fRandom_up @p s =>
+          mc_carthy_memory s
+        | _ => Inj fMem_read @ p @ s
+      end.
+  End get_mem.
+
+  (** Note, this will be well-founded recursion **)
+  Fixpoint mc_carthy (f : sexpr) (xs : list sexpr) : sexpr :=
+    match f with
+      | Inj (fLoc sz l) =>
+        match xs with
+          | x :: nil => mc_carthy_loc l x
+          | _ => apps f xs
+        end
+      | Inj (fArray s l a) =>
+        match xs with
+          | idx :: s :: nil => mc_carthy_array a s idx
+          | _ => apps f xs
+        end
+      | Inj fMem_read =>
+        match xs with
+          | p :: s :: nil => mc_carthy_memory p s
+          | _ => apps f xs
+        end
+      | _ => apps f xs
+    end.
+
   Definition wp_rtl_instrs (s : list rtl_instr) (p : sprop)
   : list rtl_instr * sprop :=
     wp_rtl_instrs' s p
-                   (fun rs p => (rs, beta_all nil nil p))
-                   (fun p => (nil, beta_all nil nil p)).
+                   (fun rs p => (rs, beta_all mc_carthy nil nil p))
+                   (fun p => (nil, beta_all mc_carthy nil nil p)).
 
   Time Eval vm_compute in
       fun (P : _) (X : int 8) (L : location 8) =>
